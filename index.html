@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mexico Air Pollution: A Decade of PM2.5 (2010-2021)</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            background: #fff;
+            color: #222;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 { font-size: 1.6rem; margin: 30px 0 6px; }
+        .subtitle { color: #555; margin-bottom: 20px; font-size: 0.9rem; line-height: 1.4; }
+
+        .nav {
+            display: flex;
+            gap: 4px;
+            margin: 20px 0;
+            border-bottom: 1px solid #ddd;
+        }
+        .nav button {
+            padding: 8px 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-family: 'Times New Roman', Times, serif;
+            color: #555;
+            border-bottom: 2px solid transparent;
+        }
+        .nav button:hover { color: #000; }
+        .nav button.active {
+            color: #000;
+            font-weight: bold;
+            border-bottom: 2px solid #333;
+        }
+
+        .scene { display: none; }
+        .scene.active { display: block; }
+        .scene h2 { font-size: 1.1rem; margin-bottom: 4px; }
+        .scene p { color: #555; margin-bottom: 16px; font-size: 0.85rem; }
+
+        .chart-container { position: relative; }
+
+        .axis text { font-size: 11px; fill: #444; }
+        .axis path, .axis line { stroke: #bbb; }
+        .grid line { stroke: #eee; }
+        .grid path { display: none; }
+
+        .tooltip {
+            position: absolute;
+            background: #333;
+            color: white;
+            padding: 6px 10px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-family: sans-serif;
+            pointer-events: none;
+            opacity: 0;
+            z-index: 200;
+        }
+
+        .who-line { stroke: #c0392b; stroke-width: 1; stroke-dasharray: 5,3; }
+        .mexico-line { stroke: #e67e22; stroke-width: 1; stroke-dasharray: 5,3; }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-top: 12px;
+            font-size: 12px;
+        }
+        .legend-item {
+            display: flex; align-items: center; gap: 5px;
+            cursor: pointer; padding: 2px 6px;
+            user-select: none;
+        }
+        .legend-item:hover { background: #f5f5f5; }
+        .legend-item.disabled { opacity: 0.3; }
+        .legend-swatch { width: 14px; height: 3px; }
+
+        .annotation-line { stroke: #666; stroke-width: 0.8; }
+        .annotation-title { font-size: 11px; font-weight: bold; fill: #222; }
+        .annotation-label { font-size: 10px; fill: #555; }
+
+        .hint {
+            text-align: center;
+            color: #999;
+            font-size: 0.75rem;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Mexico's Air Quality: PM2.5 Pollution (2010–2021)</h1>
+    <p class="subtitle">An exploration of fine particulate matter levels across Mexican cities over a decade.</p>
+
+    <div class="nav">
+        <button class="active" onclick="showScene(0)">National Trend</button>
+        <button onclick="showScene(1)">City Comparison</button>
+        <button onclick="showScene(2)">City Ranking</button>
+    </div>
+
+    <div class="scene active" id="scene-0">
+        <h2>Average PM2.5 across Mexico, by year</h2>
+        <p>National average has declined slightly but remains well above WHO and Mexico's own health standards.</p>
+        <div class="chart-container" id="chart-national"></div>
+        <div class="hint">Hover over points for values</div>
+    </div>
+
+    <div class="scene" id="scene-1">
+        <h2>PM2.5 trends for four major metropolitan areas</h2>
+        <p>Toluca consistently records the highest levels. Monterrey improved after 2017. Valle de México remains steady.</p>
+        <div class="chart-container" id="chart-cities"></div>
+        <div class="legend" id="legend-cities"></div>
+        <div class="hint">Click legend items to show/hide. Hover points for values.</div>
+    </div>
+
+    <div class="scene" id="scene-2">
+        <h2>Top 20 most polluted cities by average PM2.5 (2010–2021)</h2>
+        <p>Of the 33 monitored networks in Mexico, these are the worst. All exceed the WHO guideline of 5 μg/m³, and most exceed Mexico's own standard of 12 μg/m³.</p>
+        <div class="chart-container" id="chart-ranking"></div>
+        <div class="hint">Hover over bars for details</div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+    // ===== PARAMETERS (state variables) =====
+    let currentScene = 0;
+    let selectedCity = null;
+    let highlightedStation = null;
+
+    const margin = {top: 80, right: 40, bottom: 50, left: 60};
+    const width = 880 - margin.left - margin.right;
+    const height = 420 - margin.top - margin.bottom;
+
+    const WHO_GUIDELINE = 5;
+    const MEXICO_STANDARD = 12;
+
+    const cityColors = {
+        'Valle de México': '#333',
+        'Monterrey': '#777',
+        'Guadalajara': '#e67e22',
+        'Toluca': '#c0392b'
+    };
+
+    const tooltip = d3.select('#tooltip');
+
+    // ===== HELPER: Draw annotation =====
+    function drawAnnotation(svg, x, y, dx, dy, title, label) {
+        const g = svg.append('g').attr('class', 'annotation');
+        g.append('line')
+            .attr('class', 'annotation-line')
+            .attr('x1', x).attr('y1', y)
+            .attr('x2', x + dx).attr('y2', y + dy);
+        g.append('circle')
+            .attr('cx', x).attr('cy', y)
+            .attr('r', 4)
+            .attr('fill', 'none').attr('stroke', '#555').attr('stroke-width', 1.5);
+        g.append('text')
+            .attr('class', 'annotation-title')
+            .attr('x', x + dx + (dx > 0 ? 4 : -4))
+            .attr('y', y + dy - 2)
+            .attr('text-anchor', dx > 0 ? 'start' : 'end')
+            .text(title);
+        g.append('text')
+            .attr('class', 'annotation-label')
+            .attr('x', x + dx + (dx > 0 ? 4 : -4))
+            .attr('y', y + dy + 13)
+            .attr('text-anchor', dx > 0 ? 'start' : 'end')
+            .text(label);
+    }
+
+    // ===== TRIGGERS (scene navigation) =====
+    function showScene(index) {
+        currentScene = index;
+        d3.selectAll('.scene').classed('active', false);
+        d3.select('#scene-' + index).classed('active', true);
+        d3.selectAll('.nav button').classed('active', function(d, i) { return i === index; });
+    }
+
+    // ===== LOAD DATA AND RENDER =====
+    Promise.all([
+        d3.json('data/data_yearly_national.json'),
+        d3.json('data/data_yearly_network.json'),
+        d3.json('data/data_city_ranking.json')
+    ]).then(function([national, network, ranking]) {
+        renderScene1(national);
+        renderScene2(network);
+        renderScene3(ranking);
+    }).catch(function(err) {
+        console.error('Data load error:', err);
+    });
+
+    // ===== SCENE 1: National Trend =====
+    function renderScene1(data) {
+        var svg = d3.select('#chart-national')
+            .append('svg')
+            .attr('width', width + margin.left + margin.right)
+            .attr('height', height + margin.top + margin.bottom)
+            .append('g')
+            .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+        var x = d3.scaleLinear()
+            .domain(d3.extent(data, function(d) { return d.year; }))
+            .range([0, width]);
+
+        var y = d3.scaleLinear()
+            .domain([0, 35])
+            .range([height, 0]);
+
+        svg.append('g').attr('class', 'grid')
+            .call(d3.axisLeft(y).tickSize(-width).tickFormat(''));
+
+        svg.append('g').attr('class', 'axis')
+            .attr('transform', 'translate(0,' + height + ')')
+            .call(d3.axisBottom(x).tickFormat(d3.format('d')));
+
+        svg.append('g').attr('class', 'axis')
+            .call(d3.axisLeft(y));
+
+        svg.append('text')
+            .attr('transform', 'rotate(-90)')
+            .attr('y', -45).attr('x', -height / 2)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '12px').style('fill', '#666')
+            .text('PM2.5 (μg/m³)');
+
+        svg.append('text')
+            .attr('x', width / 2).attr('y', height + 40)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '12px').style('fill', '#666')
+            .text('Year');
+
+        // WHO guideline
+        svg.append('line').attr('class', 'who-line')
+            .attr('x1', 0).attr('x2', width)
+            .attr('y1', y(WHO_GUIDELINE)).attr('y2', y(WHO_GUIDELINE));
+        svg.append('text')
+            .attr('x', width - 5).attr('y', y(WHO_GUIDELINE) - 5)
+            .attr('text-anchor', 'end')
+            .style('font-size', '11px').style('fill', '#e94560')
+            .text('WHO Guideline (5 μg/m³)');
+
+        // Mexico standard
+        svg.append('line').attr('class', 'mexico-line')
+            .attr('x1', 0).attr('x2', width)
+            .attr('y1', y(MEXICO_STANDARD)).attr('y2', y(MEXICO_STANDARD));
+        svg.append('text')
+            .attr('x', width - 5).attr('y', y(MEXICO_STANDARD) - 5)
+            .attr('text-anchor', 'end')
+            .style('font-size', '11px').style('fill', '#f4a261')
+            .text('Mexico Standard (12 μg/m³)');
+
+        // Line
+        var line = d3.line()
+            .x(function(d) { return x(d.year); })
+            .y(function(d) { return y(d.pm25_mean); });
+
+        svg.append('path')
+            .datum(data)
+            .attr('fill', 'none')
+            .attr('stroke', '#333')
+            .attr('stroke-width', 2)
+            .attr('d', line);
+
+        // Points
+        svg.selectAll('.dot')
+            .data(data)
+            .enter().append('circle')
+            .attr('cx', function(d) { return x(d.year); })
+            .attr('cy', function(d) { return y(d.pm25_mean); })
+            .attr('r', 4)
+            .attr('fill', '#333')
+            .style('cursor', 'pointer')
+            .on('mouseover', function(event, d) {
+                d3.select(this).attr('r', 8);
+                tooltip.style('opacity', 1)
+                    .html('<strong>' + d.year + '</strong><br>PM2.5: ' + d.pm25_mean.toFixed(1) + ' μg/m³<br>Stations: ' + d.station_count)
+                    .style('left', (event.pageX + 12) + 'px')
+                    .style('top', (event.pageY - 30) + 'px');
+            })
+            .on('mouseout', function() {
+                d3.select(this).attr('r', 5);
+                tooltip.style('opacity', 0);
+            });
+
+        // Annotations
+        drawAnnotation(svg, x(2011), y(26.7), 80, -60, '2011: 26.7 μg/m³', 'Highest average recorded');
+        drawAnnotation(svg, x(2020), y(19.6), -100, -70, '2020: 19.6 μg/m³', 'COVID lockdowns reduce emissions');
+    }
+
+    // ===== SCENE 2: City Comparison =====
+    function renderScene2(data) {
+        var cities = ['Valle de México', 'Monterrey', 'Guadalajara', 'Toluca'];
+        var filtered = data.filter(function(d) { return cities.indexOf(d.network_name) >= 0; });
+
+        var svg = d3.select('#chart-cities')
+            .append('svg')
+            .attr('width', width + margin.left + margin.right)
+            .attr('height', height + margin.top + margin.bottom)
+            .append('g')
+            .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+        var x = d3.scaleLinear()
+            .domain([2010, 2021])
+            .range([0, width]);
+
+        var y = d3.scaleLinear()
+            .domain([0, 45])
+            .range([height, 0]);
+
+        svg.append('g').attr('class', 'grid')
+            .call(d3.axisLeft(y).tickSize(-width).tickFormat(''));
+
+        svg.append('g').attr('class', 'axis')
+            .attr('transform', 'translate(0,' + height + ')')
+            .call(d3.axisBottom(x).tickFormat(d3.format('d')));
+
+        svg.append('g').attr('class', 'axis')
+            .call(d3.axisLeft(y));
+
+        svg.append('text')
+            .attr('transform', 'rotate(-90)')
+            .attr('y', -45).attr('x', -height / 2)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '12px').style('fill', '#666')
+            .text('PM2.5 (μg/m³)');
+
+        // Mexico standard line
+        svg.append('line').attr('class', 'mexico-line')
+            .attr('x1', 0).attr('x2', width)
+            .attr('y1', y(MEXICO_STANDARD)).attr('y2', y(MEXICO_STANDARD));
+        svg.append('text')
+            .attr('x', width - 5).attr('y', y(MEXICO_STANDARD) - 5)
+            .attr('text-anchor', 'end')
+            .style('font-size', '11px').style('fill', '#f4a261')
+            .text('Mexico Standard (12 μg/m³)');
+
+        // Lines per city — assign class for toggle
+        var line = d3.line()
+            .x(function(d) { return x(d.year); })
+            .y(function(d) { return y(d.pm25_mean); });
+
+        var cityVisible = {};
+        cities.forEach(function(city) { cityVisible[city] = true; });
+
+        cities.forEach(function(city) {
+            var cityData = filtered.filter(function(d) { return d.network_name === city; })
+                .sort(function(a, b) { return a.year - b.year; });
+
+            var cityClass = 'city-' + city.replace(/[^a-zA-Z]/g, '');
+
+            svg.append('path')
+                .datum(cityData)
+                .attr('class', cityClass)
+                .attr('fill', 'none')
+                .attr('stroke', cityColors[city])
+                .attr('stroke-width', 2.5)
+                .attr('d', line);
+
+            svg.selectAll('.dot-' + cityClass)
+                .data(cityData)
+                .enter().append('circle')
+                .attr('class', cityClass)
+                .attr('cx', function(d) { return x(d.year); })
+                .attr('cy', function(d) { return y(d.pm25_mean); })
+                .attr('r', 4)
+                .attr('fill', cityColors[city])
+                .style('cursor', 'pointer')
+                .on('mouseover', function(event, d) {
+                    d3.select(this).attr('r', 7);
+                    tooltip.style('opacity', 1)
+                        .html('<strong>' + d.network_name + '</strong><br>Year: ' + d.year + '<br>PM2.5: ' + d.pm25_mean.toFixed(1) + ' μg/m³<br>Stations: ' + d.station_count)
+                        .style('left', (event.pageX + 12) + 'px')
+                        .style('top', (event.pageY - 30) + 'px');
+                })
+                .on('mouseout', function() {
+                    d3.select(this).attr('r', 4);
+                    tooltip.style('opacity', 0);
+                });
+        });
+
+        // Toggleable Legend
+        var legendDiv = d3.select('#legend-cities');
+        cities.forEach(function(city) {
+            var cityClass = 'city-' + city.replace(/[^a-zA-Z]/g, '');
+            var item = legendDiv.append('div')
+                .attr('class', 'legend-item')
+                .on('click', function() {
+                    cityVisible[city] = !cityVisible[city];
+                    var visible = cityVisible[city];
+                    d3.select(this).classed('disabled', !visible);
+                    svg.selectAll('.' + cityClass)
+                        .transition().duration(300)
+                        .style('opacity', visible ? 1 : 0);
+                });
+            item.append('div').attr('class', 'legend-swatch')
+                .style('background', cityColors[city]);
+            item.append('span').text(city);
+        });
+
+        // Annotations — tied to city toggle classes
+        var tolucaClass = 'city-' + 'Toluca'.replace(/[^a-zA-Z]/g, '');
+        var monterreyClass = 'city-' + 'Monterrey'.replace(/[^a-zA-Z]/g, '');
+
+        var a1 = svg.append('g').attr('class', tolucaClass);
+        a1.append('line').attr('class', 'annotation-line')
+            .attr('x1', x(2016)).attr('y1', y(34.3))
+            .attr('x2', x(2016) + 80).attr('y2', y(34.3) - 55);
+        a1.append('circle').attr('cx', x(2016)).attr('cy', y(34.3))
+            .attr('r', 4).attr('fill', 'none').attr('stroke', '#555').attr('stroke-width', 1.5);
+        a1.append('text').attr('class', 'annotation-title')
+            .attr('x', x(2016) + 84).attr('y', y(34.3) - 57)
+            .text('Toluca');
+        a1.append('text').attr('class', 'annotation-label')
+            .attr('x', x(2016) + 84).attr('y', y(34.3) - 44)
+            .text('Consistently highest — industrial zone');
+
+        var a2 = svg.append('g').attr('class', monterreyClass);
+        a2.append('line').attr('class', 'annotation-line')
+            .attr('x1', x(2018)).attr('y1', y(17.5))
+            .attr('x2', x(2018) - 90).attr('y2', y(17.5) + 60);
+        a2.append('circle').attr('cx', x(2018)).attr('cy', y(17.5))
+            .attr('r', 4).attr('fill', 'none').attr('stroke', '#555').attr('stroke-width', 1.5);
+        a2.append('text').attr('class', 'annotation-title')
+            .attr('x', x(2018) - 94).attr('y', y(17.5) + 58)
+            .attr('text-anchor', 'end')
+            .text('Monterrey');
+        a2.append('text').attr('class', 'annotation-label')
+            .attr('x', x(2018) - 94).attr('y', y(17.5) + 71)
+            .attr('text-anchor', 'end')
+            .text('Improved since 2017');
+    }
+
+    // ===== SCENE 3: City Ranking Bar Chart =====
+    function renderScene3(data) {
+        // City-to-state mapping
+        var cityState = {
+            'Toluca': 'Edo. de México',
+            'Minatitlán': 'Veracruz',
+            'Guadalajara': 'Jalisco',
+            'Durango': 'Durango',
+            'Cuernavaca': 'Morelos',
+            'Valle de México': 'CDMX / Edo. Méx.',
+            'Atitalaquia': 'Hidalgo',
+            'Salamanca': 'Guanajuato',
+            'Saltillo': 'Coahuila',
+            'Monclova': 'Coahuila',
+            'Monterrey': 'Nuevo León',
+            'Morelia': 'Michoacán',
+            'Celaya': 'Guanajuato',
+            'Pachuca': 'Hidalgo',
+            'Chihuahua': 'Chihuahua',
+            'Irapuato': 'Guanajuato',
+            'Tepeji': 'Hidalgo',
+            'León': 'Guanajuato',
+            'Torreón': 'Coahuila',
+            'Poza Rica': 'Veracruz',
+            'Tepeapulco': 'Hidalgo',
+            'Puebla': 'Puebla',
+            'Oaxaca': 'Oaxaca',
+            'Huichapan': 'Hidalgo',
+            'Tepic': 'Nayarit',
+            'Tulancingo': 'Hidalgo',
+            'Abasolo': 'Guanajuato',
+            'Aguascalientes': 'Aguascalientes',
+            'San Miguel de Allende': 'Guanajuato',
+            'Guanajuato': 'Guanajuato',
+            'San Luis de la Paz': 'Guanajuato',
+            'Piedras Negras': 'Coahuila',
+            'Tlaxcala': 'Tlaxcala'
+        };
+
+        // Filter out Tlaxcala outlier, take top 20
+        data = data.filter(function(d) { return d.pm25_mean < 60; });
+        data = data.sort(function(a, b) { return b.pm25_mean - a.pm25_mean; }).slice(0, 20);
+
+        // Add state and display label
+        data.forEach(function(d) {
+            d.state = cityState[d.network_name] || '';
+            d.display_name = d.network_name + ' (' + d.state + ')';
+        });
+
+        var barHeight = 22;
+        var gap = 6;
+        var chartHeight = data.length * (barHeight + gap);
+        var chartMargin = {top: 80, right: 80, bottom: 40, left: 210};
+        var chartWidth = 860 - chartMargin.left - chartMargin.right;
+
+        var svg = d3.select('#chart-ranking')
+            .append('svg')
+            .attr('width', chartWidth + chartMargin.left + chartMargin.right)
+            .attr('height', chartHeight + chartMargin.top + chartMargin.bottom)
+            .append('g')
+            .attr('transform', 'translate(' + chartMargin.left + ',' + chartMargin.top + ')');
+
+        var x = d3.scaleLinear()
+            .domain([0, 40])
+            .range([0, chartWidth]);
+
+        var y = d3.scaleBand()
+            .domain(data.map(function(d) { return d.display_name; }))
+            .range([0, chartHeight])
+            .padding(0.2);
+
+        // X axis
+        svg.append('g').attr('class', 'axis')
+            .attr('transform', 'translate(0,' + chartHeight + ')')
+            .call(d3.axisBottom(x).ticks(8));
+
+        svg.append('text')
+            .attr('x', chartWidth / 2).attr('y', chartHeight + 35)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '12px').style('fill', '#666')
+            .text('Average PM2.5 (μg/m³)');
+
+        // Y axis (city + state names)
+        svg.append('g').attr('class', 'axis')
+            .call(d3.axisLeft(y));
+
+        // WHO guideline vertical line
+        svg.append('line')
+            .attr('x1', x(WHO_GUIDELINE)).attr('x2', x(WHO_GUIDELINE))
+            .attr('y1', 0).attr('y2', chartHeight)
+            .attr('class', 'who-line');
+        svg.append('text')
+            .attr('x', x(WHO_GUIDELINE)).attr('y', -12)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '10px').style('fill', '#e94560')
+            .text('WHO (5)');
+
+        // Mexico standard vertical line
+        svg.append('line')
+            .attr('x1', x(MEXICO_STANDARD)).attr('x2', x(MEXICO_STANDARD))
+            .attr('y1', 0).attr('y2', chartHeight)
+            .attr('class', 'mexico-line');
+        svg.append('text')
+            .attr('x', x(MEXICO_STANDARD)).attr('y', -12)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '10px').style('fill', '#f4a261')
+            .text('Mexico (12)');
+
+        // Bars
+        svg.selectAll('.bar')
+            .data(data)
+            .enter().append('rect')
+            .attr('x', 0)
+            .attr('y', function(d) { return y(d.display_name); })
+            .attr('width', function(d) { return x(Math.min(d.pm25_mean, 40)); })
+            .attr('height', y.bandwidth())
+            .attr('fill', '#c0392b')
+            .attr('opacity', 0.75)
+            .style('cursor', 'pointer')
+            .on('mouseover', function(event, d) {
+                d3.select(this).attr('opacity', 0.5);
+                tooltip.style('opacity', 1)
+                    .html('<strong>' + d.network_name + ', ' + d.state + '</strong><br>Avg PM2.5: ' + d.pm25_mean.toFixed(1) + ' μg/m³<br>Stations: ' + d.station_count + '<br>Records: ' + d.record_count.toLocaleString() + ' days<br>Period: ' + d.year_min + '–' + d.year_max)
+                    .style('left', (event.pageX + 12) + 'px')
+                    .style('top', (event.pageY - 30) + 'px');
+            })
+            .on('mouseout', function() {
+                d3.select(this).attr('opacity', 0.75);
+                tooltip.style('opacity', 0);
+            });
+
+        // Value labels at end of bars
+        svg.selectAll('.bar-label')
+            .data(data)
+            .enter().append('text')
+            .attr('x', function(d) { return x(Math.min(d.pm25_mean, 40)) + 5; })
+            .attr('y', function(d) { return y(d.display_name) + y.bandwidth() / 2 + 4; })
+            .style('font-size', '11px').style('fill', '#555')
+            .text(function(d) { return d.pm25_mean.toFixed(1); });
+
+        // Annotation — placed above chart in margin area
+        svg.append('text')
+            .attr('x', chartWidth - 10).attr('y', -45)
+            .attr('text-anchor', 'end')
+            .style('font-size', '11px').style('font-weight', 'bold').style('fill', '#333')
+            .text('All 20 cities exceed WHO guideline');
+        svg.append('text')
+            .attr('x', chartWidth - 10).attr('y', -30)
+            .attr('text-anchor', 'end')
+            .style('font-size', '10px').style('fill', '#666')
+            .text('Most exceed Mexico\'s own standard (12 μg/m³)');
+    }
+    </script>
+</body>
+</html>
